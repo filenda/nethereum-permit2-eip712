@@ -14,29 +14,29 @@ namespace BrlaUsdcSwap.Models
         [JsonProperty("buyToken")]
         public string? BuyToken { get; set; }
 
-        [JsonProperty("sellAmount")]
-        public string? SellAmount { get; set; }
-
-        [JsonProperty("sellToken")]
-        public string? SellToken { get; set; }
-
-        [JsonProperty("minBuyAmount")]
-        public string? MinBuyAmount { get; set; }
-
-        [JsonProperty("liquidityAvailable")]
-        public bool LiquidityAvailable { get; set; }
-
         [JsonProperty("fees")]
         public Fees? Fees { get; set; }
 
         [JsonProperty("issues")]
         public Issues? Issues { get; set; }
 
+        [JsonProperty("liquidityAvailable")]
+        public bool LiquidityAvailable { get; set; }
+
+        [JsonProperty("minBuyAmount")]
+        public string? MinBuyAmount { get; set; }
+
         [JsonProperty("permit2")]
         public Permit2? Permit2 { get; set; }
 
         [JsonProperty("route")]
         public Route? Route { get; set; }
+
+        [JsonProperty("sellAmount")]
+        public string? SellAmount { get; set; }
+
+        [JsonProperty("sellToken")]
+        public string? SellToken { get; set; }
 
         [JsonProperty("tokenMetadata")]
         public TokenMetadata? TokenMetadata { get; set; }
@@ -54,13 +54,25 @@ namespace BrlaUsdcSwap.Models
     public class Fees
     {
         [JsonProperty("integratorFee")]
-        public string? IntegratorFee { get; set; }
+        public object? IntegratorFee { get; set; }
 
         [JsonProperty("zeroExFee")]
-        public string? ZeroExFee { get; set; }
+        public ZeroExFee? ZeroExFee { get; set; }
 
         [JsonProperty("gasFee")]
-        public string? GasFee { get; set; }
+        public object? GasFee { get; set; }
+    }
+
+    public class ZeroExFee
+    {
+        [JsonProperty("amount")]
+        public string? Amount { get; set; }
+
+        [JsonProperty("token")]
+        public string? Token { get; set; }
+
+        [JsonProperty("type")]
+        public string? Type { get; set; }
     }
 
     public class Allowance
@@ -108,7 +120,7 @@ namespace BrlaUsdcSwap.Models
         public string? Amount { get; set; }
     }
 
-    public class Eip712Domain
+    public class EIP712Domain
     {
         [JsonProperty("name")]
         public string? Name { get; set; }
@@ -120,7 +132,7 @@ namespace BrlaUsdcSwap.Models
         public string? VerifyingContract { get; set; }
     }
 
-    public class Eip712Message
+    public class EIP712Message
     {
         [JsonProperty("permitted")]
         public TokenPermissions? Permitted { get; set; }
@@ -135,7 +147,7 @@ namespace BrlaUsdcSwap.Models
         public string? Deadline { get; set; }
     }
 
-    public class Eip712Type
+    public class EIP712Type
     {
         [JsonProperty("name")]
         public string? Name { get; set; }
@@ -144,28 +156,28 @@ namespace BrlaUsdcSwap.Models
         public string? Type { get; set; }
     }
 
-    public class Eip712Types
+    public class EIP712Types
     {
-        [JsonProperty("PermitTransferFrom")]
-        public List<Eip712Type>? PermitTransferFrom { get; set; }
+        [JsonProperty(nameof(PermitTransferFrom))]
+        public List<EIP712Type>? PermitTransferFrom { get; set; }
 
-        [JsonProperty("TokenPermissions")]
-        public List<Eip712Type>? TokenPermissions { get; set; }
+        [JsonProperty(nameof(TokenPermissions))]
+        public List<EIP712Type>? TokenPermissions { get; set; }
 
-        [JsonProperty("EIP712Domain")]
-        public List<Eip712Type>? EIP712Domain { get; set; }
+        [JsonProperty(nameof(EIP712Domain))]
+        public List<EIP712Type>? EIP712Domain { get; set; }
     }
 
-    public class Eip712
+    public class EIP712
     {
         [JsonProperty("types")]
-        public Eip712Types? Types { get; set; }
+        public EIP712Types? Types { get; set; }
 
         [JsonProperty("domain")]
-        public Eip712Domain? Domain { get; set; }
+        public EIP712Domain? Domain { get; set; }
 
         [JsonProperty("message")]
-        public Eip712Message? Message { get; set; }
+        public EIP712Message? Message { get; set; }
 
         [JsonProperty("primaryType")]
         public string? PrimaryType { get; set; }
@@ -180,7 +192,7 @@ namespace BrlaUsdcSwap.Models
         public string? Hash { get; set; }
 
         [JsonProperty("eip712")]
-        public Eip712? Eip712 { get; set; }
+        public EIP712? Eip712 { get; set; }
     }
 
     public class Fill

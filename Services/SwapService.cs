@@ -1,4 +1,3 @@
-// --- Services/SwapService.cs ---
 using BrlaUsdcSwap.Configuration;
 using Microsoft.Extensions.Options;
 using Nethereum.ABI.FunctionEncoding.Attributes;
@@ -25,7 +24,7 @@ namespace BrlaUsdcSwap.Services
         private class ApproveFunction : FunctionMessage
         {
             [Parameter("address", "_spender", 1)]
-            public string Spender { get; set; }
+            public string? Spender { get; set; }
 
             [Parameter("uint256", "_value", 2)]
             public BigInteger Value { get; set; }
@@ -49,22 +48,25 @@ namespace BrlaUsdcSwap.Services
                 _appSettings.UsdcTokenAddress,
                 amount);
 
-            Console.WriteLine($"Quote received: {quote.Price} USDC per BRLA");
+            Console.WriteLine($"Quote received: {quote.Transaction.Value} USDC per BRLA");
             Console.WriteLine($"Expected output: {quote.BuyAmount} USDC");
 
             // 2. Check and approve allowance if needed
             var sellAmountWei = new BigInteger(decimal.Parse(quote.SellAmount));
-            await ApproveTokenSpendingAsync(_appSettings.BrlaTokenAddress, quote.AllowanceTarget, sellAmountWei);
+            if (quote.Issues?.Allowance is not null)
+            {
+                await ApproveTokenSpendingAsync(_appSettings.BrlaTokenAddress, quote.Issues.Allowance.Spender, sellAmountWei);
+            }
 
             // 3. Execute the swap transaction
             var txInput = new TransactionInput
             {
                 From = _web3.TransactionManager.Account.Address,
-                To = quote.To,
-                Data = quote.Data,
-                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Value))),
-                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
-                GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.GasPrice)))
+                To = quote.Transaction.To,
+                Data = quote.Transaction.Data,
+                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value))),
+                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
+                GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
             };
 
             Console.WriteLine("Sending transaction...");
@@ -115,32 +117,96 @@ namespace BrlaUsdcSwap.Services
             {
                 Console.WriteLine("Approving token spending...");
 
-                // Approve the spender to spend tokens
+                // Get approve function
                 var approveFunction = contract.GetFunction("approve");
-                var approveTxHash = await approveFunction.SendTransactionAsync(
-                    _web3.TransactionManager.Account.Address,
-                    null, // Gas
-                    null, // Gas price
-                    null, // Value
-                    spenderAddress,
-                    amount);
+                string approveTxHash;
+
+                try
+                {
+                    // Get current gas price
+                    var gasPrice = await _web3.Eth.GasPrice.SendRequestAsync();
+                    Console.WriteLine($"Current gas price: {gasPrice.Value} wei");
+
+                    try
+                    {
+                        // Try to estimate gas first (for better accuracy)
+                        var estimatedGas = await approveFunction.EstimateGasAsync(
+                            _web3.TransactionManager.Account.Address,
+                            null,
+                            null,
+                            spenderAddress,
+                            amount);
+
+                        // Add 30% buffer to the estimated gas
+                        var gasLimit = new HexBigInteger(estimatedGas.Value * 13 / 10);
+
+                        Console.WriteLine($"Estimated gas for approval: {estimatedGas.Value}");
+                        Console.WriteLine($"Gas limit with buffer: {gasLimit.Value}");
+
+                        // Send with explicit parameters
+                        approveTxHash = await approveFunction.SendTransactionAsync(
+                            _web3.TransactionManager.Account.Address,
+                            gasLimit,
+                            gasPrice,
+                            null,
+                            spenderAddress,
+                            amount);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error during gas estimation: {ex.Message}");
+
+                        // Fallback to fixed gas limit if estimation fails
+                        Console.WriteLine("Using fallback fixed gas limit of 100000");
+                        var gasLimit = new HexBigInteger(100000);
+
+                        approveTxHash = await approveFunction.SendTransactionAsync(
+                            _web3.TransactionManager.Account.Address,
+                            gasLimit,
+                            gasPrice,
+                            null,
+                            spenderAddress,
+                            amount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to send approval transaction: {ex.Message}");
+                    if (ex.InnerException != null)
+                    {
+                        Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                    }
+                    throw new Exception("Token approval transaction failed to send", ex);
+                }
 
                 Console.WriteLine($"Approval transaction sent: {approveTxHash}");
 
                 // Wait for the approval transaction to be mined
                 var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(approveTxHash);
-                while (receipt == null)
+                int attempts = 0;
+                while (receipt == null && attempts < 30) // Limit to 30 attempts (2.5 minutes)
                 {
                     await Task.Delay(5000); // Check every 5 seconds
                     receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(approveTxHash);
+                    attempts++;
+                    Console.WriteLine($"Waiting for approval tx receipt... Attempt {attempts}/30");
+                }
+
+                if (receipt == null)
+                {
+                    Console.WriteLine("Approval transaction is taking longer than expected to be mined.");
+                    Console.WriteLine($"You can check the status manually: https://polygonscan.com/tx/{approveTxHash}");
+                    throw new Exception("Approval transaction is taking too long to be mined.");
                 }
 
                 if (receipt.Status.Value != 1)
                 {
-                    throw new Exception("Token approval failed");
+                    Console.WriteLine($"Approval transaction failed with status: {receipt.Status.Value}");
+                    Console.WriteLine($"Gas used: {receipt.GasUsed.Value}");
+                    throw new Exception("Token approval failed on-chain");
                 }
 
-                Console.WriteLine("Token approval successful");
+                Console.WriteLine($"Token approval successful. Gas used: {receipt.GasUsed.Value}");
             }
             else
             {

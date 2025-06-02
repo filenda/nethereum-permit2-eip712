@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        ".env*": "dotenv",
+        "appsettings.json": "jsonc",
+    },
+    "github.copilot.enable": {
+        "*": true,
+        // ...
+        "dotenv": false,
+        "jsonc": false
+    }
+}

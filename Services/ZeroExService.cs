@@ -25,6 +25,7 @@ namespace BrlaUsdcSwap.Services
             if (!string.IsNullOrEmpty(_appSettings.ZeroExApiKey))
             {
                 _httpClient.DefaultRequestHeaders.Add("0x-api-key", _appSettings.ZeroExApiKey);
+                _httpClient.DefaultRequestHeaders.Add("0x-version", _appSettings.ZeroExApiVer);
             }
         }
 
@@ -36,15 +37,19 @@ namespace BrlaUsdcSwap.Services
 
             // Build query parameters
             var queryParams = HttpUtility.ParseQueryString(string.Empty);
-            queryParams["sellToken"] = sellToken;
+            queryParams["chainId"] = _appSettings.ChainId.ToString();
             queryParams["buyToken"] = buyToken;
+            queryParams["sellToken"] = sellToken;
             queryParams["sellAmount"] = sellAmountInWei.ToString();
-            queryParams["slippagePercentage"] = "0.01"; // 1% slippage
-            queryParams["skipValidation"] = "true";
-            queryParams["enableSlippageProtection"] = "true";
+            var account = new Nethereum.Web3.Accounts.Account(_appSettings.PrivateKey, _appSettings.ChainId);
+            var walletAddress = account.Address;
+            queryParams["taker"] = walletAddress;
+            // queryParams["slippagePercentage"] = "0.01"; // 1% slippage
+            // queryParams["skipValidation"] = "true";
+            // queryParams["enableSlippageProtection"] = "true";
 
             // Make the request
-            var response = await _httpClient.GetAsync($"swap/v1/quote?{queryParams}");
+            var response = await _httpClient.GetAsync($"swap/permit2/quote?{queryParams}");
             response.EnsureSuccessStatusCode();
 
             // Parse the response

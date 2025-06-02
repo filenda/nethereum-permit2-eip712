@@ -1,3 +1,4 @@
+// --- Services/SwapService.cs ---
 using BrlaUsdcSwap.Configuration;
 using Microsoft.Extensions.Options;
 using Nethereum.ABI.FunctionEncoding.Attributes;
@@ -7,6 +8,7 @@ using Nethereum.RPC.Eth.DTOs;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
 using System;
+using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
 
@@ -67,10 +69,10 @@ namespace BrlaUsdcSwap.Services
 
             Console.WriteLine("Sending transaction...");
             var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
-            
+
             Console.WriteLine("Waiting for transaction to be mined...");
             var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
-            
+
             // Wait for receipt (optional, can be removed if you don't want to wait)
             while (receipt == null)
             {
@@ -93,7 +95,7 @@ namespace BrlaUsdcSwap.Services
         private async Task ApproveTokenSpendingAsync(string tokenAddress, string spenderAddress, BigInteger amount)
         {
             Console.WriteLine("Checking token allowance...");
-            
+
             // Create contract instance for the token
             var contract = _web3.Eth.GetContract(
                 @"[{""constant"":true,""inputs"":[{""name"":""_owner"",""type"":""address""},{""name"":""_spender"",""type"":""address""}],""name"":""allowance"",""outputs"":[{""name"":""remaining"",""type"":""uint256""}],""type"":""function""},
@@ -112,7 +114,7 @@ namespace BrlaUsdcSwap.Services
             if (allowance < amount)
             {
                 Console.WriteLine("Approving token spending...");
-                
+
                 // Approve the spender to spend tokens
                 var approveFunction = contract.GetFunction("approve");
                 var approveTxHash = await approveFunction.SendTransactionAsync(
@@ -137,7 +139,7 @@ namespace BrlaUsdcSwap.Services
                 {
                     throw new Exception("Token approval failed");
                 }
-                
+
                 Console.WriteLine("Token approval successful");
             }
             else

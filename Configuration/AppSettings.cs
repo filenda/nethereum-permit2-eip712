@@ -8,6 +8,8 @@ namespace BrlaUsdcSwap.Configuration
         public string BrlaTokenAddress { get; set; }
         public string UsdcTokenAddress { get; set; }
         public string ZeroExApiKey { get; set; }
+        public string ZeroExApiVer { get;  set; }
         public int ChainId { get; set; }
+        public string WalletAddress { get; set; }
     }
 }

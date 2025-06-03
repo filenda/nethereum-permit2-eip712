@@ -12,6 +12,7 @@ using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
 using System.Xml;
+using System.Collections.Generic; // Add this using directive
 
 namespace BrlaUsdcSwap.Services
 {
@@ -20,6 +21,7 @@ namespace BrlaUsdcSwap.Services
         private readonly IZeroExService _zeroExService;
         private readonly AppSettings _appSettings;
         private readonly Web3 _web3;
+        private readonly Dictionary<string, string> _tokenAbis; // Add this dictionary
 
         // ERC20 approval function ABI
         [Function("approve")]
@@ -40,62 +42,21 @@ namespace BrlaUsdcSwap.Services
             // Create web3 instance with account from private key
             var account = new Account(_appSettings.PrivateKey, _appSettings.ChainId);
             _web3 = new Web3(account, _appSettings.PolygonRpcUrl);
-        }
 
-        public async Task<string> SwapBrlaToUsdcAsync(decimal amount)
-        {
-            // 1. Get quote from 0x API
-            var quote = await _zeroExService.GetSwapQuoteAsync(
-                _appSettings.BrlaTokenAddress,
-                _appSettings.UsdcTokenAddress,
-                amount);
-
-            Console.WriteLine($"Quote received: {quote.Transaction.Value} USDC per BRLA");
-            Console.WriteLine($"Expected output: {quote.BuyAmount} USDC");
-
-            // 2. Check and approve allowance if needed
-            var sellAmountWei = new BigInteger(decimal.Parse(quote.SellAmount));
-            if (quote.Issues?.Allowance is not null)
+            // Initialize the token ABIs dictionary
+            _tokenAbis = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                await ApproveTokenSpendingAsync(_appSettings.BrlaTokenAddress, quote.Issues.Allowance.Spender, sellAmountWei);
-            }
-
-            // 3. Execute the swap transaction
-            var txInput = new TransactionInput
-            {
-                From = _web3.TransactionManager.Account.Address,
-                To = quote.Transaction.To,
-                Data = quote.Transaction.Data,
-                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value))),
-                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
-                GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
+                {
+                    _appSettings.BrlaTokenAddress,
+                    @"[{""inputs"":[{""internalType"":""address"",""name"":""_logic"",""type"":""address""},{""internalType"":""bytes"",""name"":""_data"",""type"":""bytes""}],""stateMutability"":""payable"",""type"":""constructor""},{""anonymous"":false,""inputs"":[{""indexed"":false,""internalType"":""address"",""name"":""previousAdmin"",""type"":""address""},{""indexed"":false,""internalType"":""address"",""name"":""newAdmin"",""type"":""address""}],""name"":""AdminChanged"",""type"":""event""},{""anonymous"":false,""inputs"":[{""indexed"":true,""internalType"":""address"",""name"":""beacon"",""type"":""address""}],""name"":""BeaconUpgraded"",""type"":""event""},{""anonymous"":false,""inputs"":[{""indexed"":true,""internalType"":""address"",""name"":""implementation"",""type"":""address""}],""name"":""Upgraded"",""type"":""event""},{""stateMutability"":""payable"",""type"":""fallback""},{""stateMutability"":""payable"",""type"":""receive""},{""constant"":true,""inputs"":[{""name"":""_owner"",""type"":""address""},{""name"":""_spender"",""type"":""address""}],""name"":""allowance"",""outputs"":[{""name"":""remaining"",""type"":""uint256""}],""type"":""function""},{""constant"":false,""inputs"":[{""name"":""_spender"",""type"":""address""},{""name"":""_value"",""type"":""uint256""}],""name"":""approve"",""outputs"":[{""name"":""success"",""type"":""bool""}],""type"":""function""}]"
+                },
+                {
+                    _appSettings.UsdcTokenAddress,
+                    @"[{""inputs"":[{""internalType"":""address"",""name"":""implementationContract"",""type"":""address""}],""stateMutability"":""nonpayable"",""type"":""constructor""},{""anonymous"":false,""inputs"":[{""indexed"":false,""internalType"":""address"",""name"":""previousAdmin"",""type"":""address""},{""indexed"":false,""internalType"":""address"",""name"":""newAdmin"",""type"":""address""}],""name"":""AdminChanged"",""type"":""event""},{""anonymous"":false,""inputs"":[{""indexed"":false,""internalType"":""address"",""name"":""implementation"",""type"":""address""}],""name"":""Upgraded"",""type"":""event""},{""stateMutability"":""payable"",""type"":""fallback""},{""inputs"":[],""name"":""admin"",""outputs"":[{""internalType"":""address"",""name"":"""",""type"":""address""}],""stateMutability"":""view"",""type"":""function""},{""inputs"":[{""internalType"":""address"",""name"":""newAdmin"",""type"":""address""}],""name"":""changeAdmin"",""outputs"":[],""stateMutability"":""nonpayable"",""type"":""function""},{""inputs"":[],""name"":""implementation"",""outputs"":[{""internalType"":""address"",""name"":"""",""type"":""address""}],""stateMutability"":""view"",""type"":""function""},{""inputs"":[{""internalType"":""address"",""name"":""newImplementation"",""type"":""address""}],""name"":""upgradeTo"",""outputs"":[],""stateMutability"":""nonpayable"",""type"":""function""},{""inputs"":[{""internalType"":""address"",""name"":""newImplementation"",""type"":""address""},{""internalType"":""bytes"",""name"":""data"",""type"":""bytes""}],""name"":""upgradeToAndCall"",""outputs"":[],""stateMutability"":""payable"",""type"":""function""},{""constant"":true,""inputs"":[{""name"":""_owner"",""type"":""address""},{""name"":""_spender"",""type"":""address""}],""name"":""allowance"",""outputs"":[{""name"":""remaining"",""type"":""uint256""}],""type"":""function""},{""constant"":false,""inputs"":[{""name"":""_spender"",""type"":""address""},{""name"":""_value"",""type"":""uint256""}],""name"":""approve"",""outputs"":[{""name"":""success"",""type"":""bool""}],""type"":""function""}]"
+                }
             };
-
-            Console.WriteLine("Sending transaction...");
-            var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
-
-            Console.WriteLine("Waiting for transaction to be mined...");
-            var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
-
-            // Wait for receipt (optional, can be removed if you don't want to wait)
-            while (receipt == null)
-            {
-                await Task.Delay(5000); // Check every 5 seconds
-                receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
-            }
-
-            if (receipt.Status.Value == 1)
-            {
-                Console.WriteLine("Transaction successful!");
-            }
-            else
-            {
-                throw new Exception("Transaction failed");
-            }
-
-            return transactionHash;
         }
-
+        
         public async Task<string> SwapTokensAsync(string sellTokenAddress, string buyTokenAddress, decimal amount)
         {
             // Get token names for better logging
@@ -170,11 +131,13 @@ namespace BrlaUsdcSwap.Services
         {
             Console.WriteLine("Checking token allowance...");
 
+            if (!_tokenAbis.TryGetValue(tokenAddress, out var tokenAbi))
+            {
+                throw new ArgumentException($"ABI not found for token address: {tokenAddress}");
+            }
+
             // Create contract instance for the token
-            var contract = _web3.Eth.GetContract(
-                @"[{""constant"":true,""inputs"":[{""name"":""_owner"",""type"":""address""},{""name"":""_spender"",""type"":""address""}],""name"":""allowance"",""outputs"":[{""name"":""remaining"",""type"":""uint256""}],""type"":""function""},
-                {""constant"":false,""inputs"":[{""name"":""_spender"",""type"":""address""},{""name"":""_value"",""type"":""uint256""}],""name"":""approve"",""outputs"":[{""name"":""success"",""type"":""bool""}],""type"":""function""}]",
-                tokenAddress);
+            var contract = _web3.Eth.GetContract(tokenAbi, tokenAddress);
 
             // Get allowance function
             var allowanceFunction = contract.GetFunction("allowance");

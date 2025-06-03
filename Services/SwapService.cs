@@ -6,10 +6,12 @@ using Nethereum.Hex.HexTypes;
 using Nethereum.RPC.Eth.DTOs;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
+using Newtonsoft.Json;
 using System;
 using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
+using System.Xml;
 
 namespace BrlaUsdcSwap.Services
 {
@@ -72,6 +74,76 @@ namespace BrlaUsdcSwap.Services
             Console.WriteLine("Sending transaction...");
             var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
 
+            Console.WriteLine("Waiting for transaction to be mined...");
+            var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
+
+            // Wait for receipt (optional, can be removed if you don't want to wait)
+            while (receipt == null)
+            {
+                await Task.Delay(5000); // Check every 5 seconds
+                receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
+            }
+
+            if (receipt.Status.Value == 1)
+            {
+                Console.WriteLine("Transaction successful!");
+            }
+            else
+            {
+                throw new Exception("Transaction failed");
+            }
+
+            return transactionHash;
+        }
+
+        public async Task<string> SwapTokensAsync(string sellTokenAddress, string buyTokenAddress, decimal amount)
+        {
+            // Get token names for better logging
+            string sellTokenName = sellTokenAddress == _appSettings.BrlaTokenAddress ? "BRLA" : "USDC";
+            string buyTokenName = buyTokenAddress == _appSettings.BrlaTokenAddress ? "BRLA" : "USDC";
+
+            Console.WriteLine($"Swapping {amount} {sellTokenName} to {buyTokenName}");
+            Console.WriteLine($"Using wallet address: {_web3.TransactionManager.Account.Address}");
+
+            // 1. Get quote from 0x API
+            var quote = await _zeroExService.GetSwapQuoteAsync(
+                sellTokenAddress,
+                buyTokenAddress,
+                amount);
+
+            Console.WriteLine($"RAW Quote: {JsonConvert.SerializeObject(quote, Newtonsoft.Json.Formatting.Indented)}");
+
+            // Display quote information
+            if (quote.Route?.Fills?.Count > 0)
+            {
+                Console.WriteLine($"Quote received from sources: {string.Join(", ", quote.Route.Fills.Select(f => f.Source))}");
+            }
+
+            Console.WriteLine($"Expected output: {quote.BuyAmount} {buyTokenName} for {quote.SellAmount} {sellTokenName}");
+
+            // Rest of the swap logic continues as before...
+            // 2. Check and approve allowance if needed
+            var sellAmountWei = new BigInteger(decimal.Parse(quote.SellAmount));
+            if (quote.Issues?.Allowance is not null)
+            {
+                await ApproveTokenSpendingAsync(sellTokenAddress, quote.Issues.Allowance.Spender, sellAmountWei);
+            }
+
+            // 3. Execute the swap transaction
+            var txInput = new TransactionInput
+            {
+                From = _web3.TransactionManager.Account.Address,
+                To = quote.Transaction.To,
+                Data = quote.Transaction.Data,
+                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value))),
+                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
+                GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
+            };
+
+            Console.WriteLine("Sending transaction...");
+            var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
+
+            Console.WriteLine($"Transaction sent: {transactionHash}");
             Console.WriteLine("Waiting for transaction to be mined...");
             var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
 

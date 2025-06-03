@@ -1,9 +1,11 @@
 using BrlaUsdcSwap.Configuration;
 using BrlaUsdcSwap.Models;
 using Microsoft.Extensions.Options;
+using Nethereum.Web3;
 using Newtonsoft.Json;
 using System;
 using System.Net.Http;
+using System.Numerics;
 using System.Threading.Tasks;
 using System.Web;
 
@@ -31,9 +33,25 @@ namespace BrlaUsdcSwap.Services
 
         public async Task<ZeroExQuoteResponse> GetSwapQuoteAsync(string sellToken, string buyToken, decimal sellAmount)
         {
-            // Convert decimal to integer with 18 decimals (common for ERC20 tokens)
-            // Note: BRLA and USDC might have different decimals, adjust as needed
-            var sellAmountInWei = Convert.ToInt64(sellAmount * 1_000_000_000_000_000_000);
+            // Determine correct decimals based on which token is being sold
+            int decimals = sellToken == _appSettings.BrlaTokenAddress
+                ? _appSettings.BrlaDecimals
+                : _appSettings.UsdcDecimals;
+
+            // Convert decimal to integer with appropriate decimals
+            BigInteger sellAmountInWei;
+            if (decimals == 18)
+            {
+                sellAmountInWei = Web3.Convert.ToWei(sellAmount);
+            }
+            else if (decimals == 6)
+            {
+                sellAmountInWei = new BigInteger(decimal.Truncate(sellAmount * 1_000_000m));
+            }
+            else
+            {
+                sellAmountInWei = (BigInteger)(sellAmount * (decimal)BigInteger.Pow(10, decimals));
+            }
 
             // Build query parameters
             var queryParams = HttpUtility.ParseQueryString(string.Empty);

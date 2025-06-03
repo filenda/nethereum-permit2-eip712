@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch BRLA Swap App",
+            "name": "Launch Token Swap App",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
@@ -14,28 +14,60 @@
             "internalConsoleOptions": "neverOpen"
         },
         {
-            "name": "Launch with Amount (1.0 BRLA)",
+            "name": "BRLA → USDC: 1.0 BRLA",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
             "program": "${workspaceFolder}/bin/Debug/net8.0/BrlaUsdcSwap.dll",
-            "args": [
-                "1.0"
-            ],
+            "args": ["1.0", "1"],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "stopAtEntry": false,
             "internalConsoleOptions": "neverOpen"
         },
         {
-            "name": "Launch with Custom Amount",
+            "name": "USDC → BRLA: 1.0 USDC",
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
             "program": "${workspaceFolder}/bin/Debug/net8.0/BrlaUsdcSwap.dll",
-            "args": [
-                "${input:amountToSwap}"
-            ],
+            "args": ["1.0", "2"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "name": "BRLA → USDC: Custom Amount",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/BrlaUsdcSwap.dll",
+            "args": ["${input:brlaAmount}", "1"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "name": "USDC → BRLA: Custom Amount",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/BrlaUsdcSwap.dll",
+            "args": ["${input:usdcAmount}", "2"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "name": "Custom Swap (Select Direction and Amount)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/BrlaUsdcSwap.dll",
+            "args": ["${input:customAmount}", "${input:swapDirection}"],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "stopAtEntry": false,
@@ -50,10 +82,38 @@
     ],
     "inputs": [
         {
-            "id": "amountToSwap",
+            "id": "brlaAmount",
             "type": "promptString",
-            "description": "Amount of BRLA to swap",
+            "description": "Amount of BRLA to swap to USDC",
             "default": "0.5"
+        },
+        {
+            "id": "usdcAmount",
+            "type": "promptString",
+            "description": "Amount of USDC to swap to BRLA",
+            "default": "0.5"
+        },
+        {
+            "id": "customAmount",
+            "type": "promptString",
+            "description": "Amount to swap",
+            "default": "1.0"
+        },
+        {
+            "id": "swapDirection",
+            "type": "pickString",
+            "description": "Swap direction",
+            "options": [
+                {
+                    "label": "BRLA → USDC",
+                    "value": "1"
+                },
+                {
+                    "label": "USDC → BRLA",
+                    "value": "2"
+                }
+            ],
+            "default": "1"
         }
     ]
 }

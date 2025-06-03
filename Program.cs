@@ -29,11 +29,37 @@ namespace BrlaUsdcSwap
 
             // Get services
             var swapService = serviceProvider.GetRequiredService<ISwapService>();
+            var appSettings = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AppSettings>>().Value;
 
             try
             {
-                Console.WriteLine("BRLA to USDC Token Swap Application");
+                Console.WriteLine("Token Swap Application");
                 Console.WriteLine("-----------------------------------");
+                Console.WriteLine("1. Swap BRLA to USDC");
+                Console.WriteLine("2. Swap USDC to BRLA");
+
+                // Get swap direction
+                int swapDirection = 1; // Default to BRLA → USDC
+                
+                if (args.Length > 1 && int.TryParse(args[1], out int argDirection) && (argDirection == 1 || argDirection == 2))
+                {
+                    swapDirection = argDirection;
+                }
+                else
+                {
+                    Console.Write("Enter your choice (1 or 2): ");
+                    if (!int.TryParse(Console.ReadLine(), out swapDirection) || (swapDirection != 1 && swapDirection != 2))
+                    {
+                        Console.WriteLine("Invalid choice. Using default: 1 (BRLA to USDC)");
+                        swapDirection = 1;
+                    }
+                }
+
+                // Determine token addresses based on swap direction
+                string sellTokenAddress = swapDirection == 1 ? appSettings.BrlaTokenAddress : appSettings.UsdcTokenAddress;
+                string buyTokenAddress = swapDirection == 1 ? appSettings.UsdcTokenAddress : appSettings.BrlaTokenAddress;
+                string sellTokenName = swapDirection == 1 ? "BRLA" : "USDC";
+                string buyTokenName = swapDirection == 1 ? "USDC" : "BRLA";
 
                 // Parse amount from command line or ask user
                 decimal amountToSwap;
@@ -43,7 +69,7 @@ namespace BrlaUsdcSwap
                 }
                 else
                 {
-                    Console.Write("Enter amount of BRLA to swap: ");
+                    Console.Write($"Enter amount of {sellTokenName} to swap: ");
                     if (!decimal.TryParse(Console.ReadLine(), out amountToSwap))
                     {
                         Console.WriteLine("Invalid amount. Please enter a valid number.");
@@ -51,11 +77,11 @@ namespace BrlaUsdcSwap
                     }
                 }
 
-                Console.WriteLine($"Swapping {amountToSwap} BRLA to USDC...");
+                Console.WriteLine($"Swapping {amountToSwap} {sellTokenName} to {buyTokenName}...");
 
                 // Execute the swap
-                var result = await swapService.SwapBrlaToUsdcAsync(amountToSwap);
-
+                var result = await swapService.SwapTokensAsync(sellTokenAddress, buyTokenAddress, amountToSwap);
+                
                 // Display result
                 Console.WriteLine("Swap completed successfully!");
                 Console.WriteLine($"Transaction Hash: {result}");
@@ -69,6 +95,13 @@ namespace BrlaUsdcSwap
                 {
                     Console.WriteLine($"Inner Error: {ex.InnerException.Message}");
                 }
+                
+                // Additional error details
+                Console.WriteLine("\nTroubleshooting tips:");
+                Console.WriteLine("1. Check your token balance");
+                Console.WriteLine("2. Ensure you have enough MATIC for gas fees");
+                Console.WriteLine("3. Try with a smaller amount");
+                Console.WriteLine("4. Try increasing slippage tolerance in the settings");
             }
 
             Console.WriteLine("Press any key to exit...");

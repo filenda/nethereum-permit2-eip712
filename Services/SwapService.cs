@@ -13,6 +13,12 @@ using System.Numerics;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Collections.Generic; // Add this using directive
+using Nethereum.Signer; // Add this for EIP712 signing
+using Nethereum.Signer.EIP712; // Add this for EIP712 domain
+using Nethereum.Util;
+using BrlaUsdcSwap.Models;
+using Nethereum.ABI.EIP712;
+using Nethereum.Hex.HexConvertors.Extensions; // Add this for hex utilities
 
 namespace BrlaUsdcSwap.Services
 {
@@ -56,7 +62,7 @@ namespace BrlaUsdcSwap.Services
                 }
             };
         }
-        
+
         public async Task<string> SwapTokensAsync(string sellTokenAddress, string buyTokenAddress, decimal amount)
         {
             // Get token names for better logging
@@ -85,8 +91,19 @@ namespace BrlaUsdcSwap.Services
             // Rest of the swap logic continues as before...
             // 2. Check and approve allowance if needed
             var sellAmountWei = new BigInteger(decimal.Parse(quote.SellAmount));
+            
+            // Check if Permit2 is present in the quote and requires signing
+            string? permit2Signature = null;
+            if (quote.Permit2?.Eip712 != null)
+            {
+                Console.WriteLine("Quote contains Permit2 data, generating signature...");
+                permit2Signature = GeneratePermit2Signature(quote.Permit2.Eip712);
+                Console.WriteLine("Permit2 signature generated successfully");
+            }
+
             if (quote.Issues?.Allowance is not null)
             {
+                // Only do regular approval if Permit2 isn't being used
                 await ApproveTokenSpendingAsync(sellTokenAddress, quote.Issues.Allowance.Spender, sellAmountWei);
             }
 
@@ -100,6 +117,26 @@ namespace BrlaUsdcSwap.Services
                 Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
                 GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
             };
+
+            // If we have a Permit2 signature, we need to modify the transaction data to include it
+            if (permit2Signature != null)
+            {
+                Console.WriteLine("Appending Permit2 signature to transaction data...");
+                
+                // The exact method to append the signature depends on how the 0x API expects it
+                // This is a simplified example - you may need to adjust based on 0x documentation
+                // The signature might need to be appended to the transaction data or sent separately
+                
+                // Remove 0x prefix if present from both data and signature
+                string dataHex = txInput.Data.StartsWith("0x") ? txInput.Data.Substring(2) : txInput.Data;
+                string signatureHex = permit2Signature.StartsWith("0x") ? permit2Signature.Substring(2) : permit2Signature;
+                
+                // Append the signature to the data
+                // Note: This is simplified - you'd need to check the 0x API docs for the exact format
+                txInput.Data = "0x" + dataHex + signatureHex;
+                
+                Console.WriteLine($"Modified transaction data with signature: {txInput.Data}");
+            }
 
             Console.WriteLine("Sending transaction...");
             var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
@@ -247,6 +284,137 @@ namespace BrlaUsdcSwap.Services
             {
                 Console.WriteLine("Token allowance is sufficient, no approval needed");
             }
+        }
+
+        private string GeneratePermit2Signature(EIP712? eip712Data)
+        {
+            Console.WriteLine("Generating Permit2 signature...");
+
+            if (eip712Data == null)
+            {
+                throw new ArgumentNullException(nameof(eip712Data), "EIP712 data cannot be null");
+            }
+
+            // Extract the key components from the EIP712 data
+            var domain = eip712Data.Domain;
+            var message = eip712Data.Message;
+
+            Console.WriteLine($"Domain: {JsonConvert.SerializeObject(domain)}");
+            Console.WriteLine($"Message: {JsonConvert.SerializeObject(message)}");
+
+            // Create domain separator
+            var domainSeparator = new EIP712Domain
+            {
+                Name = domain?.Name,
+                ChainId = domain?.ChainId ?? _appSettings.ChainId,
+                VerifyingContract = domain?.VerifyingContract
+            };
+
+            // Create the EIP712 typed data with the generic type parameter
+            var typedData = new TypedData<EIP712Domain>
+            {
+                Domain = domainSeparator,
+                PrimaryType = eip712Data.PrimaryType,
+                Types = BuildEIP712Types(eip712Data.Types),
+                Message = BuildEIP712Message(message)
+            };
+
+            // Use Eip712TypedDataSigner instead of EthereumMessageSigner
+            var typedDataSigner = new Eip712TypedDataSigner();
+            var privateKey = _appSettings.PrivateKey;
+
+            // Sign using the appropriate method
+            var ethECKey = new EthECKey(privateKey);
+            var signature = typedDataSigner.SignTypedDataV4(typedData, ethECKey);
+
+            Console.WriteLine($"Generated signature: {signature}");
+
+            // Parse the signature to get r, s, v
+            var signatureBytes = signature.HexToByteArray();
+            if (signatureBytes.Length != 65)
+            {
+                throw new Exception($"Expected 65 bytes signature, got {signatureBytes.Length}");
+            }
+
+            // Extract r, s, v from the signature
+            byte[] r = new byte[32];
+            byte[] s = new byte[32];
+            Array.Copy(signatureBytes, 0, r, 0, 32);
+            Array.Copy(signatureBytes, 32, s, 0, 32);
+            byte v = signatureBytes[64];
+
+            // Ensure v is properly formatted (0 or 1) + 27 as required by the contract
+            // v in Ethereum is normally 27 or 28, but some implementations expect 0 or 1
+            if (v < 27)
+            {
+                v += 27;
+            }
+
+            // Repack the signature in the format expected by Permit2 (r, s, v)
+            byte[] formattedSignature = new byte[65];
+            Array.Copy(r, 0, formattedSignature, 0, 32);
+            Array.Copy(s, 0, formattedSignature, 32, 32);
+            formattedSignature[64] = v;
+
+            // Convert to hex string without 0x prefix
+            var formattedSignatureHex = formattedSignature.ToHex();
+
+            Console.WriteLine($"Formatted signature: 0x{formattedSignatureHex}");
+            return "0x" + formattedSignatureHex;
+        }
+
+        // Helper methods to construct the EIP712 types and message
+        private Dictionary<string, MemberDescription[]> BuildEIP712Types(EIP712Types? types)
+        {
+            var result = new Dictionary<string, MemberDescription[]>();
+            
+            // Add the domain type
+            result.Add("EIP712Domain", types?.EIP712Domain?.Select(t => 
+                new MemberDescription { Name = t.Name, Type = t.Type }).ToArray() ?? Array.Empty<MemberDescription>());
+            
+            // Add the primary type (PermitTransferFrom)
+            result.Add("PermitTransferFrom", types?.PermitTransferFrom?.Select(t => 
+                new MemberDescription { Name = t.Name, Type = t.Type }).ToArray() ?? Array.Empty<MemberDescription>());
+            
+            // Add TokenPermissions type
+            result.Add("TokenPermissions", types?.TokenPermissions?.Select(t => 
+                new MemberDescription { Name = t.Name, Type = t.Type }).ToArray() ?? Array.Empty<MemberDescription>());
+            
+            return result;
+        }
+
+        private MemberValue[] BuildEIP712Message(EIP712Message? message)
+        {
+            var result = new List<MemberValue>();
+
+            // Add the permitted token permissions
+            if (message?.Permitted != null)
+            {
+                // Create a nested MemberValue for the permitted token
+                var permittedValues = new List<MemberValue>
+                {
+                    new MemberValue { TypeName = "address", Value = message.Permitted.Token ?? string.Empty },
+                    new MemberValue { TypeName = "uint256", Value = message.Permitted.Amount ?? string.Empty }
+                };
+                
+                result.Add(new MemberValue 
+                { 
+                    TypeName = "TokenPermissions", 
+                    Value = permittedValues.ToArray() 
+                });
+            }
+
+            // Add other message fields
+            if (message?.Spender != null)
+                result.Add(new MemberValue { TypeName = "address", Value = message.Spender });
+            
+            if (message?.Nonce != null)
+                result.Add(new MemberValue { TypeName = "uint256", Value = message.Nonce });
+            
+            if (message?.Deadline != null)
+                result.Add(new MemberValue { TypeName = "uint256", Value = message.Deadline });
+
+            return result.ToArray();
         }
     }
 }

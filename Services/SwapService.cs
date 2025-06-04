@@ -7,18 +7,18 @@ using Nethereum.RPC.Eth.DTOs;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 using System;
 using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
-using System.Xml;
-using System.Collections.Generic; // Add this using directive
-using Nethereum.Signer; // Add this for EIP712 signing
-using Nethereum.Signer.EIP712; // Add this for EIP712 domain
+using System.Collections.Generic;
+using Nethereum.Signer;
+using Nethereum.Signer.EIP712;
 using Nethereum.Util;
 using BrlaUsdcSwap.Models;
 using Nethereum.ABI.EIP712;
-using Nethereum.Hex.HexConvertors.Extensions; // Add this for hex utilities
+using Nethereum.Hex.HexConvertors.Extensions;
 
 namespace BrlaUsdcSwap.Services
 {
@@ -27,7 +27,7 @@ namespace BrlaUsdcSwap.Services
         private readonly IZeroExService _zeroExService;
         private readonly AppSettings _appSettings;
         private readonly Web3 _web3;
-        private readonly Dictionary<string, string> _tokenAbis; // Add this dictionary
+        private readonly Dictionary<string, string> _tokenAbis;
 
         // ERC20 approval function ABI
         [Function("approve")]
@@ -88,81 +88,153 @@ namespace BrlaUsdcSwap.Services
 
             Console.WriteLine($"Expected output: {quote.BuyAmount} {buyTokenName} for {quote.SellAmount} {sellTokenName}");
 
-            // Rest of the swap logic continues as before...
             // 2. Check and approve allowance if needed
             var sellAmountWei = new BigInteger(decimal.Parse(quote.SellAmount));
-
+            
             // Check if Permit2 is present in the quote and requires signing
             string? permit2Signature = null;
             if (quote.Permit2?.Eip712 != null)
             {
                 Console.WriteLine("Quote contains Permit2 data, generating signature...");
                 permit2Signature = GeneratePermit2Signature(quote.Permit2.Eip712);
-                Console.WriteLine("Permit2 signature generated successfully");
+                Console.WriteLine($"Permit2 signature generated: {permit2Signature}");
             }
 
-            if (quote.Issues?.Allowance is not null)
+            if (quote.Issues?.Allowance is not null && permit2Signature == null)
             {
                 // Only do regular approval if Permit2 isn't being used
                 await ApproveTokenSpendingAsync(sellTokenAddress, quote.Issues.Allowance.Spender, sellAmountWei);
             }
 
             // 3. Execute the swap transaction
+            string transactionHash;
+            if (permit2Signature != null)
+            {
+                // Execute swap with Permit2 signature
+                transactionHash = await ExecuteSwapWithPermit2Signature(quote, permit2Signature);
+            }
+            else
+            {
+                // Execute standard swap without Permit2
+                transactionHash = await ExecuteStandardSwap(quote);
+            }
+
+            Console.WriteLine($"Transaction successful! Hash: {transactionHash}");
+            return transactionHash;
+        }
+
+        private async Task<string> ExecuteStandardSwap(ZeroExQuoteResponse quote)
+        {
+            Console.WriteLine("Executing standard swap...");
+            
             var txInput = new TransactionInput
             {
                 From = _web3.TransactionManager.Account.Address,
                 To = quote.Transaction.To,
                 Data = quote.Transaction.Data,
                 Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value ?? "0"))),
-                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
+                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer
                 GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
             };
-
-            // If we have a Permit2 signature, we need to modify the transaction data to include it
-            if (permit2Signature != null)
-            {
-                Console.WriteLine("Appending Permit2 signature to transaction data...");
-
-                // Remove 0x prefix if present from both data and signature
-                string dataHex = txInput.Data.StartsWith("0x") ? txInput.Data.Substring(2) : txInput.Data;
-                string signatureHex = permit2Signature.StartsWith("0x") ? permit2Signature.Substring(2) : permit2Signature;
-
-                // Calculate the signature length in bytes (each hex character is half a byte)
-                int signatureLengthInBytes = signatureHex.Length / 2;
-
-                // Convert the length to a 32-byte hex string (padded)
-                string signatureLengthHex = new BigInteger(signatureLengthInBytes).ToString("x").PadLeft(64, '0');
-
-                // Concatenate: original tx data + signature length (32 bytes) + signature
-                txInput.Data = "0x" + dataHex + signatureLengthHex + signatureHex;
-
-                Console.WriteLine($"Modified transaction data with signature: {txInput.Data}");
-            }
 
             Console.WriteLine("Sending transaction...");
             var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
 
             Console.WriteLine($"Transaction sent: {transactionHash}");
+            await WaitForTransactionReceipt(transactionHash);
+            
+            return transactionHash;
+        }
+
+        private async Task<string> ExecuteSwapWithPermit2Signature(ZeroExQuoteResponse quote, string permit2Signature)
+        {
+            Console.WriteLine("Executing swap with Permit2 signature...");
+            
+            // Get the original transaction data
+            string transactionData = quote.Transaction.Data;
+            
+            // Handle signature prefixes consistently
+            string dataHex = transactionData.StartsWith("0x") ? transactionData.Substring(2) : transactionData;
+            string signatureHex = permit2Signature.StartsWith("0x") ? permit2Signature.Substring(2) : permit2Signature;
+            
+            // Calculate signature length in bytes
+            int signatureLengthInBytes = signatureHex.Length / 2;
+            
+            // Create a BigInteger for the length and convert to hex
+            // This matches ethers.js hexZeroPad function behavior
+            var signatureLengthBigInt = new BigInteger(signatureLengthInBytes);
+            
+            // Convert to a hex string WITHOUT "0x" prefix, padded to 64 characters (32 bytes)
+            string signatureLengthHex = signatureLengthBigInt.ToString("x").PadLeft(64, '0');
+            
+            // Concatenate: original tx data + signature length (32 bytes) + signature
+            string fullTransactionData = "0x" + dataHex + signatureLengthHex + signatureHex;
+            
+            Console.WriteLine($"Transaction data with appended signature: {fullTransactionData}");
+            
+            // Create the transaction input
+            var txInput = new TransactionInput
+            {
+                From = _web3.TransactionManager.Account.Address,
+                To = quote.Transaction.To,
+                Data = fullTransactionData,
+                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value ?? "0"))),
+                Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer
+                GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
+            };
+            
+            Console.WriteLine("Sending transaction...");
+            
+            try {
+                // Send the transaction
+                var transactionHash = await _web3.Eth.TransactionManager.SendTransactionAsync(txInput);
+                Console.WriteLine($"Transaction sent: {transactionHash}");
+                
+                await WaitForTransactionReceipt(transactionHash);
+                
+                return transactionHash;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending transaction: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                }
+                throw;
+            }
+        }
+
+        private async Task WaitForTransactionReceipt(string transactionHash)
+        {
+            // Wait for the transaction to be mined
             Console.WriteLine("Waiting for transaction to be mined...");
             var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
-
-            // Wait for receipt (optional, can be removed if you don't want to wait)
-            while (receipt == null)
+            
+            int attempts = 0;
+            while (receipt == null && attempts < 30) // Limit to 30 attempts (2.5 minutes)
             {
                 await Task.Delay(5000); // Check every 5 seconds
                 receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(transactionHash);
+                attempts++;
+                Console.WriteLine($"Waiting for receipt... Attempt {attempts}/30");
             }
-
-            if (receipt.Status.Value == 1)
+            
+            if (receipt == null)
             {
-                Console.WriteLine("Transaction successful!");
+                Console.WriteLine("Transaction is taking longer than expected to be mined.");
+                Console.WriteLine($"You can check the status manually: https://polygonscan.com/tx/{transactionHash}");
+                throw new Exception("Transaction is taking too long to be mined.");
             }
-            else
+            
+            if (receipt.Status.Value != 1)
             {
-                throw new Exception("Transaction failed");
+                Console.WriteLine($"Transaction failed with status: {receipt.Status.Value}");
+                Console.WriteLine($"Gas used: {receipt.GasUsed.Value}");
+                throw new Exception("Transaction failed on-chain");
             }
-
-            return transactionHash;
+            
+            Console.WriteLine($"Transaction successful! Gas used: {receipt.GasUsed.Value}");
         }
 
         private async Task ApproveTokenSpendingAsync(string tokenAddress, string spenderAddress, BigInteger amount)
@@ -253,33 +325,9 @@ namespace BrlaUsdcSwap.Services
                 }
 
                 Console.WriteLine($"Approval transaction sent: {approveTxHash}");
-
-                // Wait for the approval transaction to be mined
-                var receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(approveTxHash);
-                int attempts = 0;
-                while (receipt == null && attempts < 30) // Limit to 30 attempts (2.5 minutes)
-                {
-                    await Task.Delay(5000); // Check every 5 seconds
-                    receipt = await _web3.Eth.Transactions.GetTransactionReceipt.SendRequestAsync(approveTxHash);
-                    attempts++;
-                    Console.WriteLine($"Waiting for approval tx receipt... Attempt {attempts}/30");
-                }
-
-                if (receipt == null)
-                {
-                    Console.WriteLine("Approval transaction is taking longer than expected to be mined.");
-                    Console.WriteLine($"You can check the status manually: https://polygonscan.com/tx/{approveTxHash}");
-                    throw new Exception("Approval transaction is taking too long to be mined.");
-                }
-
-                if (receipt.Status.Value != 1)
-                {
-                    Console.WriteLine($"Approval transaction failed with status: {receipt.Status.Value}");
-                    Console.WriteLine($"Gas used: {receipt.GasUsed.Value}");
-                    throw new Exception("Token approval failed on-chain");
-                }
-
-                Console.WriteLine($"Token approval successful. Gas used: {receipt.GasUsed.Value}");
+                await WaitForTransactionReceipt(approveTxHash);
+                
+                Console.WriteLine("Token approval successful!");
             }
             else
             {
@@ -296,155 +344,60 @@ namespace BrlaUsdcSwap.Services
                 throw new ArgumentNullException(nameof(eip712Data), "EIP712 data cannot be null");
             }
 
-            // Extract the key components from the EIP712 data
-            var domain = eip712Data.Domain;
-            var message = eip712Data.Message;
-            var types = eip712Data.Types;
-            var primaryType = eip712Data.PrimaryType;
-
-            Console.WriteLine($"Domain: {JsonConvert.SerializeObject(domain)}");
-            Console.WriteLine($"Message: {JsonConvert.SerializeObject(message)}");
-            Console.WriteLine($"Types: {JsonConvert.SerializeObject(types)}");
-            Console.WriteLine($"Primary Type: {primaryType}");
-
-            try
+            // Create a JSON representation of the typed data with EXACT case matching
+            var typedDataJson = JsonConvert.SerializeObject(new
             {
-                // Create domain separator
-                var domainSeparator = new EIP712Domain
+                types = new
                 {
-                    Name = domain?.Name,
-                    ChainId = domain?.ChainId ?? _appSettings.ChainId,
-                    VerifyingContract = domain?.VerifyingContract
-                };
-
-                // Create the EIP712 typed data with the generic type parameter
-                var typedData = new TypedData<EIP712Domain>
+                    // IMPORTANT: Use PascalCase for type names to match the primaryType
+                    PermitTransferFrom = eip712Data.Types.PermitTransferFrom?.Select(t => new { name = t.Name, type = t.Type }),
+                    TokenPermissions = eip712Data.Types.TokenPermissions?.Select(t => new { name = t.Name, type = t.Type }),
+                    EIP712Domain = eip712Data.Types.EIP712Domain?.Select(t => new { name = t.Name, type = t.Type })
+                },
+                domain = new
                 {
-                    Domain = domainSeparator,
-                    PrimaryType = primaryType,
-                    Types = BuildEIP712Types(types),
-                    Message = BuildEIP712Message(message)
-                };
-
-                // Print TypedData for debugging
-                Console.WriteLine($"TypedData: {JsonConvert.SerializeObject(typedData)}");
-
-                // Use Eip712TypedDataSigner
-                var typedDataSigner = new Eip712TypedDataSigner();
-                var privateKey = _appSettings.PrivateKey;
-
-                // Sign using the appropriate method
-                var ethECKey = new EthECKey(privateKey);
-                var signature = typedDataSigner.SignTypedDataV4(typedData, ethECKey);
-
-                Console.WriteLine($"Raw signature: {signature}");
-
-                // Parse the signature to get r, s, v
-                var signatureBytes = signature.HexToByteArray();
-                if (signatureBytes.Length != 65)
+                    name = eip712Data.Domain.Name,
+                    version = "1",
+                    chainId = eip712Data.Domain.ChainId,
+                    verifyingContract = eip712Data.Domain.VerifyingContract
+                },
+                primaryType = eip712Data.PrimaryType,
+                message = new
                 {
-                    throw new Exception($"Expected 65 bytes signature, got {signatureBytes.Length}");
+                    permitted = new
+                    {
+                        token = eip712Data.Message.Permitted.Token,
+                        amount = eip712Data.Message.Permitted.Amount
+                    },
+                    spender = eip712Data.Message.Spender,
+                    nonce = eip712Data.Message.Nonce,
+                    deadline = eip712Data.Message.Deadline
                 }
-
-                // Extract r, s, v from the signature
-                byte[] r = new byte[32];
-                byte[] s = new byte[32];
-                Array.Copy(signatureBytes, 0, r, 0, 32);
-                Array.Copy(signatureBytes, 32, s, 0, 32);
-                byte v = signatureBytes[64];
-
-                // Handle v value according to Permit2 requirements
-                // Permit2 requires v to be 27 or 28 (not 0 or 1)
-                if (v < 27)
-                {
-                    v += 27;
-                }
-
-                // Repack the signature in the format expected by Permit2 (r, s, v)
-                byte[] formattedSignature = new byte[65];
-                Array.Copy(r, 0, formattedSignature, 0, 32);
-                Array.Copy(s, 0, formattedSignature, 32, 32);
-                formattedSignature[64] = v;
-
-                // Convert to hex string with 0x prefix
-                var formattedSignatureHex = "0x" + formattedSignature.ToHex();
-                Console.WriteLine($"Formatted signature: {formattedSignatureHex}");
-
-                return formattedSignatureHex;
-            }
-            catch (Exception ex)
+            }, new JsonSerializerSettings
             {
-                Console.WriteLine($"Error generating signature: {ex.Message}");
-                if (ex.InnerException != null)
-                {
-                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
-                }
-                throw;
-            }
-        }
+                // Custom contract resolver that preserves dictionary key case
+                ContractResolver = new DefaultContractResolver(),
+                NullValueHandling = NullValueHandling.Ignore
+            });
 
-        // Helper methods to construct the EIP712 types and message
-        private Dictionary<string, MemberDescription[]> BuildEIP712Types(EIP712Types? types)
-        {
-            var result = new Dictionary<string, MemberDescription[]>();
+            Console.WriteLine($"Typed data JSON: {typedDataJson}");
 
-            // Add the domain type
-            if (types?.EIP712Domain != null)
-            {
-                result.Add("EIP712Domain", types.EIP712Domain.Select(t =>
-                    new MemberDescription { Name = t.Name, Type = t.Type }).ToArray());
-            }
+            // Create an EthECKey from the private key
+            var privateKey = _appSettings.PrivateKey;
+            var ethECKey = new EthECKey(privateKey);
 
-            // Add the primary type (PermitTransferFrom)
-            if (types?.PermitTransferFrom != null)
-            {
-                result.Add("PermitTransferFrom", types.PermitTransferFrom.Select(t =>
-                    new MemberDescription { Name = t.Name, Type = t.Type }).ToArray());
-            }
-
-            // Add TokenPermissions type
-            if (types?.TokenPermissions != null)
-            {
-                result.Add("TokenPermissions", types.TokenPermissions.Select(t =>
-                    new MemberDescription { Name = t.Name, Type = t.Type }).ToArray());
-            }
-
-            Console.WriteLine($"Built types: {JsonConvert.SerializeObject(result)}");
-            return result;
-        }
-
-        private MemberValue[] BuildEIP712Message(EIP712Message? message)
-        {
-            var result = new List<MemberValue>();
-
-            // Add the permitted token permissions
-            if (message?.Permitted != null)
-            {
-                // Create a nested MemberValue for the permitted token
-                var permittedValues = new List<MemberValue>
-                {
-                    new MemberValue { TypeName = "address", Value = message.Permitted.Token ?? string.Empty },
-                    new MemberValue { TypeName = "uint256", Value = message.Permitted.Amount ?? string.Empty }
-                };
-
-                result.Add(new MemberValue
-                {
-                    TypeName = "TokenPermissions",
-                    Value = permittedValues.ToArray()
-                });
-            }
-
-            // Add other message fields
-            if (message?.Spender != null)
-                result.Add(new MemberValue { TypeName = "address", Value = message.Spender });
-
-            if (message?.Nonce != null)
-                result.Add(new MemberValue { TypeName = "uint256", Value = message.Nonce });
-
-            if (message?.Deadline != null)
-                result.Add(new MemberValue { TypeName = "uint256", Value = message.Deadline });
-
-            return result.ToArray();
+            // Use the Eip712TypedDataSigner with the JSON directly
+            var typedDataSigner = new Eip712TypedDataSigner();
+            var signatureString = typedDataSigner.SignTypedDataV4(typedDataJson, ethECKey);
+            
+            Console.WriteLine($"Generated signature: {signatureString}");
+            
+            // Also compute and log the hash for debugging purposes
+            var encodedData = Eip712TypedDataEncoder.Current.EncodeTypedData(typedDataJson);
+            var hash = Sha3Keccack.Current.CalculateHash(encodedData);
+            Console.WriteLine($"EIP-712 hash: 0x{hash.ToHex()}");
+            
+            return signatureString;
         }
     }
 }

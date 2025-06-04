@@ -91,7 +91,7 @@ namespace BrlaUsdcSwap.Services
             // Rest of the swap logic continues as before...
             // 2. Check and approve allowance if needed
             var sellAmountWei = new BigInteger(decimal.Parse(quote.SellAmount));
-            
+
             // Check if Permit2 is present in the quote and requires signing
             string? permit2Signature = null;
             if (quote.Permit2?.Eip712 != null)
@@ -113,7 +113,7 @@ namespace BrlaUsdcSwap.Services
                 From = _web3.TransactionManager.Account.Address,
                 To = quote.Transaction.To,
                 Data = quote.Transaction.Data,
-                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value))),
+                Value = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Value ?? "0"))),
                 Gas = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.Gas)) * 12 / 10), // Adding 20% buffer to gas estimate
                 GasPrice = new HexBigInteger(new BigInteger(decimal.Parse(quote.Transaction.GasPrice)))
             };
@@ -122,19 +122,20 @@ namespace BrlaUsdcSwap.Services
             if (permit2Signature != null)
             {
                 Console.WriteLine("Appending Permit2 signature to transaction data...");
-                
-                // The exact method to append the signature depends on how the 0x API expects it
-                // This is a simplified example - you may need to adjust based on 0x documentation
-                // The signature might need to be appended to the transaction data or sent separately
-                
+
                 // Remove 0x prefix if present from both data and signature
                 string dataHex = txInput.Data.StartsWith("0x") ? txInput.Data.Substring(2) : txInput.Data;
                 string signatureHex = permit2Signature.StartsWith("0x") ? permit2Signature.Substring(2) : permit2Signature;
-                
-                // Append the signature to the data
-                // Note: This is simplified - you'd need to check the 0x API docs for the exact format
-                txInput.Data = "0x" + dataHex + signatureHex;
-                
+
+                // Calculate the signature length in bytes (each hex character is half a byte)
+                int signatureLengthInBytes = signatureHex.Length / 2;
+
+                // Convert the length to a 32-byte hex string (padded)
+                string signatureLengthHex = new BigInteger(signatureLengthInBytes).ToString("x").PadLeft(64, '0');
+
+                // Concatenate: original tx data + signature length (32 bytes) + signature
+                txInput.Data = "0x" + dataHex + signatureLengthHex + signatureHex;
+
                 Console.WriteLine($"Modified transaction data with signature: {txInput.Data}");
             }
 
@@ -298,88 +299,117 @@ namespace BrlaUsdcSwap.Services
             // Extract the key components from the EIP712 data
             var domain = eip712Data.Domain;
             var message = eip712Data.Message;
+            var types = eip712Data.Types;
+            var primaryType = eip712Data.PrimaryType;
 
             Console.WriteLine($"Domain: {JsonConvert.SerializeObject(domain)}");
             Console.WriteLine($"Message: {JsonConvert.SerializeObject(message)}");
+            Console.WriteLine($"Types: {JsonConvert.SerializeObject(types)}");
+            Console.WriteLine($"Primary Type: {primaryType}");
 
-            // Create domain separator
-            var domainSeparator = new EIP712Domain
+            try
             {
-                Name = domain?.Name,
-                ChainId = domain?.ChainId ?? _appSettings.ChainId,
-                VerifyingContract = domain?.VerifyingContract
-            };
+                // Create domain separator
+                var domainSeparator = new EIP712Domain
+                {
+                    Name = domain?.Name,
+                    ChainId = domain?.ChainId ?? _appSettings.ChainId,
+                    VerifyingContract = domain?.VerifyingContract
+                };
 
-            // Create the EIP712 typed data with the generic type parameter
-            var typedData = new TypedData<EIP712Domain>
-            {
-                Domain = domainSeparator,
-                PrimaryType = eip712Data.PrimaryType,
-                Types = BuildEIP712Types(eip712Data.Types),
-                Message = BuildEIP712Message(message)
-            };
+                // Create the EIP712 typed data with the generic type parameter
+                var typedData = new TypedData<EIP712Domain>
+                {
+                    Domain = domainSeparator,
+                    PrimaryType = primaryType,
+                    Types = BuildEIP712Types(types),
+                    Message = BuildEIP712Message(message)
+                };
 
-            // Use Eip712TypedDataSigner instead of EthereumMessageSigner
-            var typedDataSigner = new Eip712TypedDataSigner();
-            var privateKey = _appSettings.PrivateKey;
+                // Print TypedData for debugging
+                Console.WriteLine($"TypedData: {JsonConvert.SerializeObject(typedData)}");
 
-            // Sign using the appropriate method
-            var ethECKey = new EthECKey(privateKey);
-            var signature = typedDataSigner.SignTypedDataV4(typedData, ethECKey);
+                // Use Eip712TypedDataSigner
+                var typedDataSigner = new Eip712TypedDataSigner();
+                var privateKey = _appSettings.PrivateKey;
 
-            Console.WriteLine($"Generated signature: {signature}");
+                // Sign using the appropriate method
+                var ethECKey = new EthECKey(privateKey);
+                var signature = typedDataSigner.SignTypedDataV4(typedData, ethECKey);
 
-            // Parse the signature to get r, s, v
-            var signatureBytes = signature.HexToByteArray();
-            if (signatureBytes.Length != 65)
-            {
-                throw new Exception($"Expected 65 bytes signature, got {signatureBytes.Length}");
+                Console.WriteLine($"Raw signature: {signature}");
+
+                // Parse the signature to get r, s, v
+                var signatureBytes = signature.HexToByteArray();
+                if (signatureBytes.Length != 65)
+                {
+                    throw new Exception($"Expected 65 bytes signature, got {signatureBytes.Length}");
+                }
+
+                // Extract r, s, v from the signature
+                byte[] r = new byte[32];
+                byte[] s = new byte[32];
+                Array.Copy(signatureBytes, 0, r, 0, 32);
+                Array.Copy(signatureBytes, 32, s, 0, 32);
+                byte v = signatureBytes[64];
+
+                // Handle v value according to Permit2 requirements
+                // Permit2 requires v to be 27 or 28 (not 0 or 1)
+                if (v < 27)
+                {
+                    v += 27;
+                }
+
+                // Repack the signature in the format expected by Permit2 (r, s, v)
+                byte[] formattedSignature = new byte[65];
+                Array.Copy(r, 0, formattedSignature, 0, 32);
+                Array.Copy(s, 0, formattedSignature, 32, 32);
+                formattedSignature[64] = v;
+
+                // Convert to hex string with 0x prefix
+                var formattedSignatureHex = "0x" + formattedSignature.ToHex();
+                Console.WriteLine($"Formatted signature: {formattedSignatureHex}");
+
+                return formattedSignatureHex;
             }
-
-            // Extract r, s, v from the signature
-            byte[] r = new byte[32];
-            byte[] s = new byte[32];
-            Array.Copy(signatureBytes, 0, r, 0, 32);
-            Array.Copy(signatureBytes, 32, s, 0, 32);
-            byte v = signatureBytes[64];
-
-            // Ensure v is properly formatted (0 or 1) + 27 as required by the contract
-            // v in Ethereum is normally 27 or 28, but some implementations expect 0 or 1
-            if (v < 27)
+            catch (Exception ex)
             {
-                v += 27;
+                Console.WriteLine($"Error generating signature: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                }
+                throw;
             }
-
-            // Repack the signature in the format expected by Permit2 (r, s, v)
-            byte[] formattedSignature = new byte[65];
-            Array.Copy(r, 0, formattedSignature, 0, 32);
-            Array.Copy(s, 0, formattedSignature, 32, 32);
-            formattedSignature[64] = v;
-
-            // Convert to hex string without 0x prefix
-            var formattedSignatureHex = formattedSignature.ToHex();
-
-            Console.WriteLine($"Formatted signature: 0x{formattedSignatureHex}");
-            return "0x" + formattedSignatureHex;
         }
 
         // Helper methods to construct the EIP712 types and message
         private Dictionary<string, MemberDescription[]> BuildEIP712Types(EIP712Types? types)
         {
             var result = new Dictionary<string, MemberDescription[]>();
-            
+
             // Add the domain type
-            result.Add("EIP712Domain", types?.EIP712Domain?.Select(t => 
-                new MemberDescription { Name = t.Name, Type = t.Type }).ToArray() ?? Array.Empty<MemberDescription>());
-            
+            if (types?.EIP712Domain != null)
+            {
+                result.Add("EIP712Domain", types.EIP712Domain.Select(t =>
+                    new MemberDescription { Name = t.Name, Type = t.Type }).ToArray());
+            }
+
             // Add the primary type (PermitTransferFrom)
-            result.Add("PermitTransferFrom", types?.PermitTransferFrom?.Select(t => 
-                new MemberDescription { Name = t.Name, Type = t.Type }).ToArray() ?? Array.Empty<MemberDescription>());
-            
+            if (types?.PermitTransferFrom != null)
+            {
+                result.Add("PermitTransferFrom", types.PermitTransferFrom.Select(t =>
+                    new MemberDescription { Name = t.Name, Type = t.Type }).ToArray());
+            }
+
             // Add TokenPermissions type
-            result.Add("TokenPermissions", types?.TokenPermissions?.Select(t => 
-                new MemberDescription { Name = t.Name, Type = t.Type }).ToArray() ?? Array.Empty<MemberDescription>());
-            
+            if (types?.TokenPermissions != null)
+            {
+                result.Add("TokenPermissions", types.TokenPermissions.Select(t =>
+                    new MemberDescription { Name = t.Name, Type = t.Type }).ToArray());
+            }
+
+            Console.WriteLine($"Built types: {JsonConvert.SerializeObject(result)}");
             return result;
         }
 
@@ -396,21 +426,21 @@ namespace BrlaUsdcSwap.Services
                     new MemberValue { TypeName = "address", Value = message.Permitted.Token ?? string.Empty },
                     new MemberValue { TypeName = "uint256", Value = message.Permitted.Amount ?? string.Empty }
                 };
-                
-                result.Add(new MemberValue 
-                { 
-                    TypeName = "TokenPermissions", 
-                    Value = permittedValues.ToArray() 
+
+                result.Add(new MemberValue
+                {
+                    TypeName = "TokenPermissions",
+                    Value = permittedValues.ToArray()
                 });
             }
 
             // Add other message fields
             if (message?.Spender != null)
                 result.Add(new MemberValue { TypeName = "address", Value = message.Spender });
-            
+
             if (message?.Nonce != null)
                 result.Add(new MemberValue { TypeName = "uint256", Value = message.Nonce });
-            
+
             if (message?.Deadline != null)
                 result.Add(new MemberValue { TypeName = "uint256", Value = message.Deadline });
 

@@ -100,7 +100,8 @@ namespace BrlaUsdcSwap.Services
                 Console.WriteLine($"Permit2 signature generated: {permit2Signature}");
             }
 
-            if (quote.Issues?.Allowance is not null && permit2Signature == null)
+            // if (quote.Issues?.Allowance is not null && permit2Signature == null)
+            if (quote.Issues?.Allowance is not null)
             {
                 // Only do regular approval if Permit2 isn't being used
                 await ApproveTokenSpendingAsync(sellTokenAddress, quote.Issues.Allowance.Spender, sellAmountWei);
